@@ -1,0 +1,20 @@
+[project]
+name = "skills"
+version = "0.1.0"
+description = "Generate and dynamically track skills for Claude Code"
+readme = "README.md"
+authors = [
+    { name = "Harry Ballington", email = "hballington12@gmail.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "claude-agent-sdk",
+    "tiktoken>=0.7.0",
+]
+
+[project.scripts]
+skills = "skills.main:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

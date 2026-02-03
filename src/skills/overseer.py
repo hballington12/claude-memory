@@ -56,6 +56,7 @@ class Overseer:
     def _log(self, message: str) -> None:
         """Log a message to the shared log file."""
         from datetime import datetime
+
         # Use same log as agent for consistency
         log_path = Path.home() / ".config" / "skills" / "agent.log"
         log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -141,25 +142,55 @@ class Overseer:
         current_length = len(messages)
 
         if current_length <= self.last_transcript_length:
-            self._log(f"token_calc: no new msgs (current={current_length}, last={self.last_transcript_length})")
+            self._log(
+                f"token_calc: no new msgs (current={current_length}, last={self.last_transcript_length})"
+            )
             return 0
 
-        new_messages = messages[self.last_transcript_length:]
-        self._log(f"token_calc: {len(new_messages)} new msgs (transcript has {current_length} total)")
+        new_messages = messages[self.last_transcript_length :]
+        self._log(
+            f"token_calc: {len(new_messages)} new msgs (transcript has {current_length} total)"
+        )
         self.last_transcript_length = current_length
 
+        # First pass: collect Skill tool_use IDs to filter their results
+        skill_tool_ids: set[str] = set()
+        for msg in new_messages:
+            if msg.get("type") == "assistant":
+                content = msg.get("message", {}).get("content", [])
+                if isinstance(content, list):
+                    for c in content:
+                        if c.get("type") == "tool_use" and c.get("name") == "Skill":
+                            skill_tool_ids.add(c.get("id", ""))
+
+        # Second pass: count tokens, excluding Skill-related content
         total_tokens = 0
         for msg in new_messages:
             msg_type = msg.get("type", "")
-            if msg_type == "human":
+            if msg_type == "user":
                 content = msg.get("message", {}).get("content", "")
-                total_tokens += self._count_tokens(str(content))
+                if isinstance(content, str):
+                    total_tokens += self._count_tokens(content)
+                elif isinstance(content, list):
+                    for c in content:
+                        if c.get("type") == "text":
+                            total_tokens += self._count_tokens(c.get("text", ""))
+                        elif c.get("type") == "tool_result":
+                            # Skip Skill tool results
+                            if c.get("tool_use_id", "") not in skill_tool_ids:
+                                result_content = c.get("content", "")
+                                if isinstance(result_content, str):
+                                    total_tokens += self._count_tokens(result_content)
             elif msg_type == "assistant":
                 content = msg.get("message", {}).get("content", [])
                 if isinstance(content, list):
                     for c in content:
                         if c.get("type") == "text":
                             total_tokens += self._count_tokens(c.get("text", ""))
+                        # Skip Skill tool_use blocks for token counting
+                        elif c.get("type") == "tool_use" and c.get("name") != "Skill":
+                            # Count tool input tokens
+                            total_tokens += self._count_tokens(str(c.get("input", {})))
                 else:
                     total_tokens += self._count_tokens(str(content))
 
@@ -203,11 +234,15 @@ class Overseer:
 
             if self.active_agent.returncode == 0:
                 output = stdout.decode().strip()
-                self._log(f"agent stdout ({len(output)} chars): {output[:1000] if output else '(empty)'}")
+                self._log(
+                    f"agent stdout ({len(output)} chars): {output[:1000] if output else '(empty)'}"
+                )
                 return output
             else:
                 stderr_text = stderr.decode().strip()
-                self._log(f"agent failed (rc={self.active_agent.returncode}): {stderr_text[:500]}")
+                self._log(
+                    f"agent failed (rc={self.active_agent.returncode}): {stderr_text[:500]}"
+                )
                 return None
 
         except subprocess.TimeoutExpired:
@@ -231,12 +266,16 @@ class Overseer:
         if self.config["trigger_mode"] == "tokens":
             should = self.tokens_since_last_trigger >= self.config["token_threshold"]
             if should:
-                self._log(f"trigger: token_threshold ({self.tokens_since_last_trigger} >= {self.config['token_threshold']})")
+                self._log(
+                    f"trigger: token_threshold ({self.tokens_since_last_trigger} >= {self.config['token_threshold']})"
+                )
             return should
         else:  # prompts mode
             should = self.prompt_count >= self.config["prompt_threshold"]
             if should:
-                self._log(f"trigger: prompt_threshold ({self.prompt_count} >= {self.config['prompt_threshold']})")
+                self._log(
+                    f"trigger: prompt_threshold ({self.prompt_count} >= {self.config['prompt_threshold']})"
+                )
             return should
 
     async def run(self) -> None:
@@ -299,7 +338,9 @@ class Overseer:
         new_tokens = self._calculate_new_tokens()
         self.tokens_since_last_trigger += new_tokens
 
-        self._log(f"event={event_name} new_tokens={new_tokens} total_tokens={self.tokens_since_last_trigger} prompts={self.prompt_count} responses={self.response_count}")
+        self._log(
+            f"event={event_name} new_tokens={new_tokens} total_tokens={self.tokens_since_last_trigger} prompts={self.prompt_count} responses={self.response_count}"
+        )
 
         if event_name == "SessionEnd":
             # Trigger agent one final time before shutdown

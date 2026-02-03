@@ -15,4 +15,4 @@ dev/
 # macOS
 .DS_Store
 
-.claude
+.claude/

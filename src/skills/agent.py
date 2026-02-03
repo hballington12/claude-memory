@@ -10,11 +10,11 @@ from datetime import datetime
 from pathlib import Path
 
 import tiktoken
-from claude_agent_sdk import query, ClaudeAgentOptions
+from claude_agent_sdk import ClaudeAgentOptions, query
 
 LOG_PATH = Path.home() / ".config" / "skills" / "agent.log"
 
-AGENT_PROMPT = '''You are responsible for maintaining the persistent memory for this project as Claude Code skills.
+AGENT_PROMPT = """You are responsible for maintaining the persistent memory for this project as Claude Code skills.
 
 ## Skills Directory Structure
 
@@ -77,7 +77,7 @@ The main Claude Code agent:
 3. After making changes (or deciding none are needed), output a brief summary (e.g., "Created project-memory skill" or "Updated goals section" or "No changes needed").
 
 IMPORTANT: You must use the Write tool to create or edit the skills files.
-'''
+"""
 
 
 def log(message: str) -> None:
@@ -91,6 +91,7 @@ def log(message: str) -> None:
 def kill_child_processes() -> None:
     """Kill all child processes of this process."""
     import subprocess
+
     pid = os.getpid()
     try:
         result = subprocess.run(
@@ -163,29 +164,72 @@ class Agent:
             if skill_dir.is_dir():
                 skill_md = skill_dir / "SKILL.md"
                 if skill_md.exists():
-                    content_parts.append(f"### {skill_dir.name}/SKILL.md\n```\n{skill_md.read_text()}\n```")
+                    content_parts.append(
+                        f"### {skill_dir.name}/SKILL.md\n```\n{skill_md.read_text()}\n```"
+                    )
 
         return "\n\n".join(content_parts) if content_parts else "(no skills)"
 
     def _format_transcript_window(self) -> str:
-        """Format transcript window for the prompt."""
+        """Format transcript window for the prompt.
+
+        Filters out Skill tool invocations to avoid polluting context with
+        content from other projects' skills.
+        """
         if not self.transcript_window:
             return "(no conversation context)"
 
+        # First pass: collect tool_use IDs for Skill invocations
+        skill_tool_ids: set[str] = set()
+        for msg in self.transcript_window:
+            if msg.get("type") == "assistant":
+                content = msg.get("message", {}).get("content", [])
+                if isinstance(content, list):
+                    for c in content:
+                        if c.get("type") == "tool_use" and c.get("name") == "Skill":
+                            skill_tool_ids.add(c.get("id", ""))
+
+        # Second pass: format messages, filtering out Skill-related content
         lines = []
         for msg in self.transcript_window:
             msg_type = msg.get("type", "unknown")
-            if msg_type == "human":
+            if msg_type == "user":
                 content = msg.get("message", {}).get("content", "")
-                lines.append(f"USER: {content[:500]}")
+                if isinstance(content, str):
+                    lines.append(f"USER: {content[:500]}")
+                elif isinstance(content, list):
+                    # Filter out tool_results from Skill invocations
+                    text_parts = []
+                    for c in content:
+                        if c.get("type") == "text":
+                            text_parts.append(c.get("text", "")[:500])
+                        elif c.get("type") == "tool_result":
+                            tool_use_id = c.get("tool_use_id", "")
+                            if tool_use_id not in skill_tool_ids:
+                                # Include non-Skill tool results (truncated)
+                                result_content = c.get("content", "")
+                                if isinstance(result_content, str):
+                                    text_parts.append(
+                                        f"[tool_result: {result_content[:200]}]"
+                                    )
+                    if text_parts:
+                        lines.append(f"USER: {' '.join(text_parts)}")
             elif msg_type == "assistant":
                 content = msg.get("message", {}).get("content", [])
                 if isinstance(content, list):
-                    text_parts = [c.get("text", "") for c in content if c.get("type") == "text"]
+                    text_parts = []
+                    for c in content:
+                        if c.get("type") == "text":
+                            text_parts.append(c.get("text", ""))
+                        elif c.get("type") == "tool_use":
+                            # Skip Skill tool uses entirely
+                            if c.get("name") != "Skill":
+                                text_parts.append(f"[tool: {c.get('name')}]")
                     text = " ".join(text_parts)
                 else:
                     text = str(content)
-                lines.append(f"ASSISTANT: {text[:500]}")
+                if text.strip():
+                    lines.append(f"ASSISTANT: {text[:500]}")
         return "\n\n".join(lines) if lines else "(no conversation context)"
 
     async def _monitor_parent(self) -> None:
@@ -213,7 +257,9 @@ class Agent:
         prompt += f"\n\n## Existing Skill Content\n\n{existing_skills}"
 
         prompt_tokens = self._count_tokens(prompt)
-        log(f"starting: prompt_tokens={prompt_tokens}, transcript_msgs={len(self.transcript_window)}")
+        log(
+            f"starting: prompt_tokens={prompt_tokens}, transcript_msgs={len(self.transcript_window)}"
+        )
 
         options = ClaudeAgentOptions(
             model="claude-sonnet-4-5",
@@ -229,9 +275,9 @@ class Agent:
                 break
             result.append(str(message))
             # Extract text content from AssistantMessage objects
-            if hasattr(message, 'content'):
+            if hasattr(message, "content"):
                 for block in message.content:
-                    if hasattr(block, 'text'):
+                    if hasattr(block, "text"):
                         final_text = block.text  # Keep last text block as summary
 
         elapsed = time.time() - start_time

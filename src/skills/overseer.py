@@ -6,6 +6,7 @@ import os
 import signal
 import subprocess
 import sys
+from datetime import datetime
 from pathlib import Path
 
 import tiktoken
@@ -17,7 +18,6 @@ class Overseer:
     PID_FILE = Path("/tmp/skills_overseer.pid")
     SOCKET_PATH = Path("/tmp/skills_overseer.sock")
     CONFIG_PATH = Path.home() / ".config" / "skills" / "config.json"
-    LOG_PATH = Path.home() / ".config" / "skills" / "overseer.log"
 
     DEFAULT_CONFIG = {
         "trigger_mode": "tokens",
@@ -26,11 +26,11 @@ class Overseer:
         "trigger_on_first_response": True,
     }
 
-    def __init__(self):
+    def __init__(self, cwd: str | None = None):
         self.running = False
         self.session_id: str | None = None
         self.transcript_path: Path | None = None
-        self.cwd: Path | None = None
+        self.cwd: Path | None = Path(cwd) if cwd else None
         self.active_agent: subprocess.Popen | None = None
 
         # Trigger tracking
@@ -53,16 +53,20 @@ class Overseer:
                 return {**self.DEFAULT_CONFIG, **config}
         return self.DEFAULT_CONFIG.copy()
 
-    def _log(self, message: str) -> None:
-        """Log a message to the shared log file."""
-        from datetime import datetime
+    def _get_log_path(self) -> Path:
+        """Get project-local log path, or fallback to global."""
+        if self.cwd:
+            return self.cwd / ".claude" / "skills" / "project-memory" / ".log-overseer"
+        # Fallback if somehow no cwd
+        return Path.home() / ".config" / "skills" / "overseer.log"
 
-        # Use same log as agent for consistency
-        log_path = Path.home() / ".config" / "skills" / "agent.log"
+    def _log(self, message: str) -> None:
+        """Log a message to the project-local log file."""
+        log_path = self._get_log_path()
         log_path.parent.mkdir(parents=True, exist_ok=True)
         timestamp = datetime.now().isoformat()
         with open(log_path, "a") as f:
-            f.write(f"[{timestamp}] overseer: {message}\n")
+            f.write(f"[{timestamp}] {message}\n")
 
     @classmethod
     def is_running(cls) -> bool:
@@ -282,6 +286,7 @@ class Overseer:
         """Run the overseer loop."""
         self.running = True
         self._write_pid()
+        self._log(f"overseer started (pid={os.getpid()}, cwd={self.cwd})")
 
         def handle_signal(sig, frame):
             self.running = False

@@ -4,19 +4,21 @@ import asyncio
 import json
 import os
 import sys
+from datetime import datetime
 from pathlib import Path
 
 from skills.overseer import Overseer
 
-# dev directory is at repo root: skills/dev
-REPO_ROOT = Path(__file__).parent.parent.parent
+# Global daemon log (not project-specific)
+DAEMON_LOG = Path.home() / ".config" / "skills" / "daemon.log"
 
 
-def _get_log_func():
-    """Import log function from dev directory."""
-    sys.path.insert(0, str(REPO_ROOT))
-    from dev.log import log
-    return log
+def daemon_log(message: str) -> None:
+    """Daemon-level logging (global, not project-specific)."""
+    DAEMON_LOG.parent.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now().isoformat()
+    with open(DAEMON_LOG, "a") as f:
+        f.write(f"[{timestamp}] {message}\n")
 
 
 def daemonize() -> None:
@@ -56,42 +58,42 @@ def daemonize() -> None:
 
 def start() -> None:
     """Start the overseer daemon if not already running."""
-    log = _get_log_func()
+    # Read stdin BEFORE forking (hook provides cwd)
+    data = json.load(sys.stdin)
+    cwd = data.get("cwd")
 
     if Overseer.is_running():
-        log(f"overseer already running (pid={Overseer.get_pid()})")
+        daemon_log(f"overseer already running (pid={Overseer.get_pid()})")
         return
 
     # Fork once to let parent return immediately
     pid = os.fork()
     if pid > 0:
         # Parent returns to caller (hook)
-        log(f"overseer starting (forked pid={pid})")
+        daemon_log(f"overseer starting (forked pid={pid}, cwd={cwd})")
         return
 
     # Child continues to daemonize
     daemonize()
 
-    # Now running as daemon
-    overseer = Overseer()
+    # Now running as daemon - pass cwd to overseer
+    overseer = Overseer(cwd=cwd)
     asyncio.run(overseer.run())
 
 
 def notify() -> None:
     """Send hook event to the running overseer via socket."""
-    log = _get_log_func()
     data = json.load(sys.stdin)
-    log(f"notify received: {json.dumps(data)}")
+    daemon_log(f"notify received: {json.dumps(data)}")
 
     if not Overseer.is_running():
-        log("overseer not running, starting...")
-        start()
-        # Give it a moment to start up
-        import time
-        time.sleep(0.2)
+        daemon_log(
+            "overseer not running, cannot notify (should have been started on SessionStart)"
+        )
+        return
 
     response = asyncio.run(Overseer.send_event(data))
     if response:
-        log(f"overseer response: {response}")
+        daemon_log(f"overseer response: {response}")
     else:
-        log("failed to send event to overseer")
+        daemon_log("failed to send event to overseer")

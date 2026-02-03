@@ -12,8 +12,6 @@ from pathlib import Path
 import tiktoken
 from claude_agent_sdk import ClaudeAgentOptions, query
 
-LOG_PATH = Path.home() / ".config" / "skills" / "agent.log"
-
 AGENT_PROMPT = """You are responsible for maintaining the persistent memory for this project as Claude Code skills.
 
 ## Skills Directory Structure
@@ -34,12 +32,18 @@ Skills live in `.claude/skills/<skill-name>/` with the following structure:
 ```yaml
 ---
 name: project-memory
-description: Persistent, evolving summary of project goals, progress, and key knowledge. Should be short and concise. Used by Claude to determine whether to load the skill or not.
+description: Persistent, evolving summary of project goals, and key knowledge. Should be short and concise. Used by Claude to determine whether to load the skill or not.
 ---
 
 # Project Memory
 
-[Core project knowledge here]
+## Project Structure
+
+```
+[Run `tree -L 2 -I '__pycache__|*.pyc|.git' .` and include the output here]
+```
+
+[Followed by up to date core project knowledge here]
 ```
 
 **Supporting files** (optional, loaded only when referenced):
@@ -65,27 +69,22 @@ The main Claude Code agent:
 
 ## Guidelines
 
-- Every project with a meaningful purpose should have a generic `project-memory` skill, which contains the key goals, essential knowledge, progress, and other important information relevant to this project that should be remembered across sessions.
+- Every project with a meaningful purpose should have a generic `project-memory` skill, which contains the key goals, essential knowledge, and other important information relevant to this project that should be remembered across sessions.
 - Summarise and refine the skill as needed, using your best judgement to decide how to manage the skills.
 - If significant subprojects emerge within the current project, it is ok to create separate `<subproject>-memory` skills, but they should be created only as needed.
-- Work only from the context provided above. Do not explore the codebase.
+- IMPORTANT: Use the Bash tool to run `tree -L 2 -I '__pycache__|*.pyc|.git' .` to get the project structure, then include the output in the SKILL.md file under the "Project Structure" section. This is the ONLY codebase exploration allowed - do not read code files.
+- The maximum file length for a skills file is 500 lines - you are responsible for maintaining this.
+- The project memory should be considered more as a TLDR on-boarding file, giving new users all the required information needed to get up to speed.
 
 ## Instructions
 
 1. Decide what changes (if any) are needed to the skills based on the conversation context.
 2. If changes are needed, USE THE WRITE OR EDIT TOOL to actually create/modify the skill files. Do not just describe what you would do - actually do it.
 3. After making changes (or deciding none are needed), output a brief summary (e.g., "Created project-memory skill" or "Updated goals section" or "No changes needed").
+4. You are responsible for pruning outdated information and maintaining the skills to be as up to date as possible.
 
 IMPORTANT: You must use the Write tool to create or edit the skills files.
 """
-
-
-def log(message: str) -> None:
-    """Log a message to the agent log file."""
-    LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
-    timestamp = datetime.now().isoformat()
-    with open(LOG_PATH, "a") as f:
-        f.write(f"[{timestamp}] {message}\n")
 
 
 def kill_child_processes() -> None:
@@ -120,6 +119,16 @@ class Agent:
         self.parent_pid = os.getppid()
         self.running = True
         self.encoder = tiktoken.get_encoding("cl100k_base")
+        self.log_path = (
+            self.cwd / ".claude" / "skills" / "project-memory" / ".log-agent"
+        )
+
+    def _log(self, message: str) -> None:
+        """Log a message to the project-local agent log file."""
+        self.log_path.parent.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.now().isoformat()
+        with open(self.log_path, "a") as f:
+            f.write(f"[{timestamp}] {message}\n")
 
     @property
     def skills_dir(self) -> Path:
@@ -257,14 +266,14 @@ class Agent:
         prompt += f"\n\n## Existing Skill Content\n\n{existing_skills}"
 
         prompt_tokens = self._count_tokens(prompt)
-        log(
+        self._log(
             f"starting: prompt_tokens={prompt_tokens}, transcript_msgs={len(self.transcript_window)}"
         )
 
         options = ClaudeAgentOptions(
             model="claude-sonnet-4-5",
             cwd=str(self.cwd),
-            allowed_tools=["Write", "Edit"],
+            allowed_tools=["Write", "Edit", "Bash(tree:*)"],
         )
 
         start_time = time.time()
@@ -284,8 +293,8 @@ class Agent:
         output = "\n".join(result)
         output_tokens = self._count_tokens(output)
 
-        log(f"finished: elapsed={elapsed:.1f}s, output_tokens={output_tokens}")
-        log(f"final_text: {final_text if final_text else '(no text)'}")
+        self._log(f"finished: elapsed={elapsed:.1f}s, output_tokens={output_tokens}")
+        self._log(f"final_text: {final_text if final_text else '(no text)'}")
 
         return final_text if final_text else output
 
@@ -297,7 +306,7 @@ class Agent:
             result = await self.process()
             return result
         except Exception as e:
-            log(f"error: {e}")
+            self._log(f"error: {e}")
             raise
         finally:
             self.running = False
